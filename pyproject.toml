@@ -1,0 +1,46 @@
+[tool.poetry]
+name = "graphql-query-planner"
+version = "0.1.0"
+description = ""
+authors = ["iyanging <iyanging@163.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+graphql-core = "^3.1.4"
+
+[tool.poetry.dev-dependencies]
+behave = "^1.2.6"
+pre-commit = "^2.12.1"
+pylint = "^2.7.4"
+mypy = "^0.812"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.black]
+line-length = 100
+skip-string-normalization = true
+exclude = '''
+(
+  /(
+      \.git
+    | \.venv
+    | \.mypy_cache
+    | __pycache__
+  )
+)
+'''
+
+[tool.isort]
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+line_length = 100
+
+indent = '    '
+no_lines_before = 'LOCALFOLDER'
+combine_as_imports = true
