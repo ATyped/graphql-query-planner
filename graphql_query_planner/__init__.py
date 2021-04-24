@@ -2,7 +2,11 @@ from typing import Optional
 
 from graphql import GraphQLSchema
 
-from graphql_query_planner.build_query_plan import BuildQueryPlanOptions, OperationContext
+from graphql_query_planner.build_query_plan import (
+    BuildQueryPlanOptions,
+    OperationContext,
+    build_query_plan,
+)
 from graphql_query_planner.query_plan import QueryPlan
 
 
@@ -29,4 +33,9 @@ class QueryPlanner:
         # taking an operationContext with a schema on it isn't consistent
         # with a QueryPlanner instance being bound to a single schema.
 
-        pass
+        operation_context.schema = self.schema
+
+        if options is not None:
+            return build_query_plan(operation_context, options)
+        else:
+            return build_query_plan(operation_context)
