@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 from graphql import (
     FragmentDefinitionNode,
@@ -83,7 +83,9 @@ def build_query_plan(
 
 # TODO
 def execution_node_for_group(
-    context: 'QueryPlanningContext', group: 'FetchGroup', parent_type: GraphQLCompositeType = None
+    context: 'QueryPlanningContext',
+    group: 'FetchGroup',
+    parent_type: Optional[GraphQLCompositeType] = None,
 ) -> PlanNode:
     pass
 
@@ -133,8 +135,8 @@ def collect_fields(
     context: 'QueryPlanningContext',
     scope: Scope[GraphQLCompositeType],
     selection_set: SelectionSetNode,
-    fields: FieldSet = None,
-    visited_fragment_names: dict[FragmentName, bool] = None,
+    fields: Optional[FieldSet] = None,
+    visited_fragment_names: Optional[dict[FragmentName, bool]] = None,
 ) -> FieldSet:
     if fields is None:
         fields = []
@@ -188,7 +190,7 @@ class QueryPlanningContext:
 
         # noinspection PyMethodMayBeStatic
         class VariableDefinitionVisitor(Visitor):
-            def enter_variable_definition(self, definition: VariableDefinitionNode, *_):
+            def enter_variable_definition(self, definition: VariableDefinitionNode, *_) -> None:
                 variable_definitions[definition.variable.name.value] = definition
 
         self._variable_definitions = variable_definitions
@@ -197,6 +199,6 @@ class QueryPlanningContext:
 
     # TODO
     def new_scope(
-        self, parent_type: TParent, enclosing_scope: GraphQLCompositeType = None
+        self, parent_type: TParent, enclosing_scope: Optional[GraphQLCompositeType] = None
     ) -> Scope[TParent]:
         pass
