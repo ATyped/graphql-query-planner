@@ -16,7 +16,7 @@ from graphql import (
 )
 
 from graphql_query_planner.field_set import FieldSet, Scope, TParent
-from graphql_query_planner.query_plan import PlanNode, QueryPlan
+from graphql_query_planner.query_plan import PlanNode, QueryPlan, ResponsePath
 
 
 @dataclass
@@ -145,9 +145,73 @@ def collect_fields(
     return []
 
 
-# TODO
+ServiceName = str
+
+
 class FetchGroup:
-    pass
+    service_name: str
+    fields: FieldSet
+    internal_fragments: set[FragmentDefinitionNode]
+
+    _required_fields: FieldSet
+    _provided_fields: FieldSet
+
+    _merge_at: Optional[ResponsePath]
+
+    _dependent_groups_by_service: dict[ServiceName, 'FetchGroup']
+
+    other_dependent_groups: list['FetchGroup']
+
+    def __init__(
+        self,
+        service_name: str,
+        fields: Optional[FieldSet] = None,
+        internal_fragments: Optional[set[FragmentDefinitionNode]] = None,
+    ):
+        if fields is None:
+            fields = []
+        if internal_fragments is None:
+            internal_fragments = set()
+
+        self.service_name = service_name
+        self.fields = fields
+        self.internal_fragments = internal_fragments
+
+        self._required_fields = []
+        self._provided_fields = []
+
+        self._merge_at = None
+
+        self._dependent_groups_by_service = {}
+
+        self.other_dependent_groups = []
+
+    # pylint: disable=protected-access
+    def dependent_group_for_service(
+        self, service_name: str, required_fields: FieldSet
+    ) -> 'FetchGroup':
+        group = self._dependent_groups_by_service.get(service_name)
+
+        if group is None:
+            group = FetchGroup(service_name)
+            group._merge_at = self._merge_at
+            self._dependent_groups_by_service[service_name] = group
+
+        if required_fields:
+            if group._required_fields:
+                group._required_fields.extend(required_fields)
+            else:
+                group._required_fields = required_fields
+
+            self.fields.extend(required_fields)
+
+        return group
+
+    @property
+    def dependent_groups(self) -> list['FetchGroup']:
+        groups = list(self._dependent_groups_by_service.values())
+        groups.extend(self.other_dependent_groups)
+        return groups
 
 
 def build_query_planning_context(
