@@ -42,6 +42,10 @@ class FlattenNode:
     node: PlanNode
 
 
+# SelectionNodes from GraphQL-js _can_ have a FragmentSpreadNode
+# but this SelectionNode is specifically typing the `requires` key
+# in a built query plan, where there can't be FragmentSpreadNodes
+# since that info is contained in the `FetchNode.operation`
 QueryPlanSelectionNode = Union['QueryPlanFieldNode', 'QueryPlanInlineFragmentNode']
 
 

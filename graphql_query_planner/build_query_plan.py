@@ -73,7 +73,11 @@ def build_query_plan(
     nodes = [execution_node_for_group(context, group, root_type) for group in groups]
 
     return QueryPlan(
-        node=flat_wrap('Sequence' if is_mutation else 'Parallel', nodes) if nodes else None
+        # if an operation is a mutation, we run the root fields in sequence,
+        # otherwise we run them in parallel
+        node=(flat_wrap('Sequence', nodes) if is_mutation else flat_wrap('Parallel', nodes))
+        if nodes
+        else None
     )
 
 
@@ -85,6 +89,11 @@ def execution_node_for_group(
 
 
 # TODO
+# Wraps the given nodes in a ParallelNode or SequenceNode, unless there's only
+# one node, in which case it is returned directly. Any nodes of the same kind
+# in the given list have their sub-nodes flattened into the list: ie,
+# flatWrap('Sequence', [a, flatWrap('Sequence', b, c), d]) returns a SequenceNode
+# with four children.
 def flat_wrap(kind: Literal['Parallel', 'Sequence'], nodes: list[PlanNode]) -> PlanNode:
     # Notice: the 'Parallel' is the value of ParallelNode.kind
     # and the 'Sequence' is the value of SequenceNode.kind
@@ -100,6 +109,18 @@ def split_root_fields(
 
 
 # TODO
+# For mutations, we need to respect the order of the fields, in order to
+# determine which fields can be batched together in the same request. If
+# they're "split" by fields belonging to other services, then we need to manage
+# the proper sequencing at the gateway level. In this example, we need 3
+# FetchGroups (requests) in sequence:
+#
+#    mutation abc {
+#      createReview() # reviews service (1)
+#      updateReview() # reviews service (1)
+#      login() # account service (2)
+#      deleteReview() # reviews service (3)
+#    }
 def split_root_fields_serially(
     context: 'QueryPlanningContext',
     fields: FieldSet,
