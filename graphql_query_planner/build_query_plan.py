@@ -1,16 +1,25 @@
 from dataclasses import dataclass
+from itertools import chain
 from typing import Literal, Optional
 
 from graphql import (
+    ArgumentNode,
+    DefinitionNode,
     DocumentNode,
+    FieldNode,
     FragmentDefinitionNode,
     GraphQLCompositeType,
     GraphQLError,
     GraphQLSchema,
+    ListTypeNode,
+    NamedTypeNode,
+    NameNode,
+    NonNullTypeNode,
     OperationDefinitionNode,
     OperationType,
     SelectionSetNode,
     VariableDefinitionNode,
+    VariableNode,
     Visitor,
     get_operation_root_type,
     print_ast,
@@ -143,23 +152,81 @@ VariableName = str
 VariableUsages = dict[VariableName, VariableDefinitionNode]  # L213
 
 
-# TODO
+def map_fetch_node_to_variable_definitions(
+    variable_usages: VariableUsages,
+) -> list[VariableDefinitionNode]:
+    return list(variable_usages.values())
+
+
 def operation_for_root_fetch(  # L223
     selection_set: SelectionSetNode,
     variable_usages: VariableUsages,
     internal_fragments: set[FragmentDefinitionNode],
     operation: Optional[OperationType] = None,
 ) -> DocumentNode:
-    pass
+    definitions: list[DefinitionNode] = [
+        OperationDefinitionNode(
+            operation=operation,
+            selection_set=selection_set,
+            variable_definitions=map_fetch_node_to_variable_definitions(variable_usages),
+        )
+    ]
+    definitions.extend(internal_fragments)
+    return DocumentNode(definitions=definitions)
 
 
-# TODO
 def operation_for_entities_fetch(  # L248
     selection_set: SelectionSetNode,
     variable_usages: VariableUsages,
     internal_fragments: set[FragmentDefinitionNode],
 ) -> DocumentNode:
-    pass
+    representations_variable = VariableNode(name=NameNode(value='representations'))
+
+    return DocumentNode(
+        definitions=list(
+            chain(
+                [
+                    OperationDefinitionNode(
+                        operation=OperationType.QUERY,
+                        variable_definitions=list(
+                            chain(
+                                [
+                                    VariableDefinitionNode(
+                                        variable=representations_variable,
+                                        type=NonNullTypeNode(
+                                            type=ListTypeNode(
+                                                type=NonNullTypeNode(
+                                                    type=NamedTypeNode(name=NameNode(value='_Any'))
+                                                )
+                                            )
+                                        ),
+                                    )
+                                ],
+                                map_fetch_node_to_variable_definitions(variable_usages),
+                            )
+                        ),
+                        selection_set=SelectionSetNode(
+                            selections=[
+                                FieldNode(
+                                    name=NameNode(value='_entities'),
+                                    arguments=[
+                                        ArgumentNode(
+                                            name=NameNode(
+                                                value=representations_variable.name.value
+                                            ),
+                                            value=representations_variable,
+                                        )
+                                    ],
+                                    selection_set=selection_set,
+                                )
+                            ]
+                        ),
+                    ),
+                ],
+                internal_fragments,
+            )
+        )
+    )
 
 
 # TODO
