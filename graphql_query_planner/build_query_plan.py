@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from itertools import chain
-from typing import Literal, Optional
+from typing import Literal, Optional, Union, cast
 
 from graphql import (
     ArgumentNode,
@@ -31,9 +31,11 @@ from graphql_query_planner.field_set import FieldSet, Scope, TParent, selection_
 from graphql_query_planner.query_plan import (
     FetchNode,
     FlattenNode,
+    ParallelNode,
     PlanNode,
     QueryPlan,
     ResponsePath,
+    SequenceNode,
     trim_selection_nodes,
 )
 
@@ -229,7 +231,6 @@ def operation_for_entities_fetch(  # L248
     )
 
 
-# TODO
 # Wraps the given nodes in a ParallelNode or SequenceNode, unless there's only
 # one node, in which case it is returned directly. Any nodes of the same kind
 # in the given list have their sub-nodes flattened into the list: ie,
@@ -238,7 +239,18 @@ def operation_for_entities_fetch(  # L248
 def flat_wrap(kind: Literal['Parallel', 'Sequence'], nodes: list[PlanNode]) -> PlanNode:  # L320
     # Notice: the 'Parallel' is the value of ParallelNode.kind
     # and the 'Sequence' is the value of SequenceNode.kind
-    pass
+    if len(nodes) == 0:
+        raise Exception('programming error: should always be called with nodes')
+    if len(nodes) == 1:
+        return nodes[0]
+    nodes = list(
+        chain.from_iterable(
+            cast(Union[ParallelNode, SequenceNode], n).nodes if n.kind == kind else [n]
+            for n in nodes
+        )
+    )
+
+    return ParallelNode(nodes=nodes) if kind == 'Parallel' else SequenceNode(nodes=nodes)
 
 
 # TODO
