@@ -28,7 +28,12 @@ repos:
         name: pylint
         entry: pylint -j 0
         language: system
-        types: [python]
+        types: [ python ]
+
+  - repo: https://github.com/pycqa/flake8
+    rev: 3.9.1
+    hooks:
+      - id: flake8
 
   - repo: local
     hooks:
@@ -36,16 +41,16 @@ repos:
         name: mypy
         entry: mypy
         language: system
-        types: [python]
+        types: [ python ]
 
   - repo: https://github.com/PyCQA/bandit
     rev: 1.7.0
     hooks:
       - id: bandit
-        args: [-f, custom, -q]
+        args: [ -f, custom, -q ]
 
   - repo: https://github.com/commitizen-tools/commitizen
     rev: v2.17.2
     hooks:
       - id: commitizen
-        stages: [commit-msg]
+        stages: [ commit-msg ]
