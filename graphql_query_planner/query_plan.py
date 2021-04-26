@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from numbers import Number
 from typing import Optional, Union
 
+from graphql import SelectionNode as GraphQLJSSelectionNode
+
 ResponsePath = list[Union[str, Number]]
 
 
@@ -58,7 +60,14 @@ class QueryPlanFieldNode:
 
 
 @dataclass(frozen=True)
-class QueryPlanInlineFragmentNode:
+class QueryPlanInlineFragmentNode:  # L56
     kind = 'InlineFragment'
     type_condition: Optional[str]
     selections: list[QueryPlanSelectionNode]
+
+
+# TODO
+def trim_selection_nodes(  # L80
+    selections: list[GraphQLJSSelectionNode],
+) -> list[QueryPlanSelectionNode]:
+    pass

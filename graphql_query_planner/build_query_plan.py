@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 from graphql import (
+    DocumentNode,
     FragmentDefinitionNode,
     GraphQLCompositeType,
     GraphQLError,
@@ -12,15 +13,24 @@ from graphql import (
     VariableDefinitionNode,
     Visitor,
     get_operation_root_type,
+    print_ast,
+    strip_ignored_characters,
     visit,
 )
 
-from graphql_query_planner.field_set import FieldSet, Scope, TParent
-from graphql_query_planner.query_plan import PlanNode, QueryPlan, ResponsePath
+from graphql_query_planner.field_set import FieldSet, Scope, TParent, selection_set_from_field_set
+from graphql_query_planner.query_plan import (
+    FetchNode,
+    FlattenNode,
+    PlanNode,
+    QueryPlan,
+    ResponsePath,
+    trim_selection_nodes,
+)
 
 
 @dataclass
-class OperationContext:
+class OperationContext:  # L87
     schema: GraphQLSchema
     operation: OperationDefinitionNode
     fragments: 'FragmentMap'
@@ -37,10 +47,13 @@ class BuildQueryPlanOptions:
 
 
 # TODO: impl debug
-def build_query_plan(
+def build_query_plan(  # L99
     operation_context: OperationContext,
-    options: BuildQueryPlanOptions = BuildQueryPlanOptions(auto_fragmentization=False),
+    options: Optional[BuildQueryPlanOptions] = None,
 ) -> QueryPlan:
+    if options is None:
+        options = BuildQueryPlanOptions(auto_fragmentization=False)
+
     context = build_query_planning_context(operation_context, options)
 
     if context.operation.operation == OperationType.SUBSCRIPTION:
@@ -81,12 +94,71 @@ def build_query_plan(
     )
 
 
-# TODO
-def execution_node_for_group(
+def execution_node_for_group(  # L150
     context: 'QueryPlanningContext',
     group: 'FetchGroup',
     parent_type: Optional[GraphQLCompositeType] = None,
 ) -> PlanNode:
+    selection_set = selection_set_from_field_set(group.fields, parent_type)
+    requires = (
+        selection_set_from_field_set(group.required_fields)
+        if len(group.required_fields) > 0
+        else None
+    )
+    variable_usages = context.get_variable_usages(selection_set, group.internal_fragments)
+
+    operation = (
+        operation_for_entities_fetch(selection_set, variable_usages, group.internal_fragments)
+        if requires is not None
+        else operation_for_root_fetch(
+            selection_set, variable_usages, group.internal_fragments, context.operation.operation
+        )
+    )
+
+    fetch_node = FetchNode(
+        service_name=group.service_name,
+        requires=trim_selection_nodes(requires.selections) if requires is not None else None,
+        variable_usages=list(variable_usages.keys()),
+        operation=strip_ignored_characters(print_ast(operation)),
+    )
+
+    node: PlanNode = (
+        FlattenNode(path=group.merge_at, node=fetch_node)
+        if group.merge_at is not None and len(group.merge_at) > 0
+        else fetch_node
+    )
+
+    if len(group.dependent_groups) > 0:
+        dependent_nodes = [
+            execution_node_for_group(context, dependent_group)
+            for dependent_group in group.dependent_groups
+        ]
+
+        return flat_wrap('Sequence', [node, flat_wrap('Parallel', dependent_nodes)])
+    else:
+        return node
+
+
+VariableName = str
+VariableUsages = dict[VariableName, VariableDefinitionNode]  # L213
+
+
+# TODO
+def operation_for_root_fetch(  # L223
+    selection_set: SelectionSetNode,
+    variable_usages: VariableUsages,
+    internal_fragments: set[FragmentDefinitionNode],
+    operation: Optional[OperationType] = None,
+) -> DocumentNode:
+    pass
+
+
+# TODO
+def operation_for_entities_fetch(  # L248
+    selection_set: SelectionSetNode,
+    variable_usages: VariableUsages,
+    internal_fragments: set[FragmentDefinitionNode],
+) -> DocumentNode:
     pass
 
 
@@ -96,14 +168,14 @@ def execution_node_for_group(
 # in the given list have their sub-nodes flattened into the list: ie,
 # flatWrap('Sequence', [a, flatWrap('Sequence', b, c), d]) returns a SequenceNode
 # with four children.
-def flat_wrap(kind: Literal['Parallel', 'Sequence'], nodes: list[PlanNode]) -> PlanNode:
+def flat_wrap(kind: Literal['Parallel', 'Sequence'], nodes: list[PlanNode]) -> PlanNode:  # L320
     # Notice: the 'Parallel' is the value of ParallelNode.kind
     # and the 'Sequence' is the value of SequenceNode.kind
     pass
 
 
 # TODO
-def split_root_fields(
+def split_root_fields(  # L336
     context: 'QueryPlanningContext',
     fields: FieldSet,
 ) -> list['FetchGroup']:
@@ -123,7 +195,7 @@ def split_root_fields(
 #      login() # account service (2)
 #      deleteReview() # reviews service (3)
 #    }
-def split_root_fields_serially(
+def split_root_fields_serially(  # L386
     context: 'QueryPlanningContext',
     fields: FieldSet,
 ) -> list['FetchGroup']:
@@ -131,7 +203,7 @@ def split_root_fields_serially(
 
 
 # TODO
-def collect_fields(
+def collect_fields(  # L834
     context: 'QueryPlanningContext',
     scope: Scope[GraphQLCompositeType],
     selection_set: SelectionSetNode,
@@ -148,15 +220,15 @@ def collect_fields(
 ServiceName = str
 
 
-class FetchGroup:
+class FetchGroup:  # L954
     service_name: str
     fields: FieldSet
     internal_fragments: set[FragmentDefinitionNode]
 
-    _required_fields: FieldSet
-    _provided_fields: FieldSet
+    required_fields: FieldSet
+    provided_fields: FieldSet
 
-    _merge_at: Optional[ResponsePath]
+    merge_at: Optional[ResponsePath]
 
     _dependent_groups_by_service: dict[ServiceName, 'FetchGroup']
 
@@ -177,10 +249,10 @@ class FetchGroup:
         self.fields = fields
         self.internal_fragments = internal_fragments
 
-        self._required_fields = []
-        self._provided_fields = []
+        self.required_fields = []
+        self.provided_fields = []
 
-        self._merge_at = None
+        self.merge_at = None
 
         self._dependent_groups_by_service = {}
 
@@ -194,14 +266,14 @@ class FetchGroup:
 
         if group is None:
             group = FetchGroup(service_name)
-            group._merge_at = self._merge_at
+            group.merge_at = self.merge_at
             self._dependent_groups_by_service[service_name] = group
 
         if required_fields:
-            if group._required_fields:
-                group._required_fields.extend(required_fields)
+            if group.required_fields:
+                group.required_fields.extend(required_fields)
             else:
-                group._required_fields = required_fields
+                group.required_fields = required_fields
 
             self.fields.extend(required_fields)
 
@@ -214,7 +286,7 @@ class FetchGroup:
         return groups
 
 
-def build_query_planning_context(
+def build_query_planning_context(  # L1056
     operation_context: OperationContext,
     options: BuildQueryPlanOptions = BuildQueryPlanOptions(auto_fragmentization=False),
 ) -> 'QueryPlanningContext':
@@ -226,11 +298,8 @@ def build_query_planning_context(
     )
 
 
-VariableName = str
-
-
 # TODO
-class QueryPlanningContext:
+class QueryPlanningContext:  # L1068
     schema: GraphQLSchema
     operation: OperationDefinitionNode
     fragments: FragmentMap
@@ -238,7 +307,7 @@ class QueryPlanningContext:
 
     _variable_definitions: dict[VariableName, VariableDefinitionNode]
 
-    def __init__(
+    def __init__(  # L1084
         self,
         schema: GraphQLSchema,
         operation: OperationDefinitionNode,
@@ -262,7 +331,13 @@ class QueryPlanningContext:
         visit(operation, VariableDefinitionVisitor())
 
     # TODO
-    def new_scope(
+    def get_variable_usages(  # L1121
+        self, selection_set: SelectionSetNode, fragments: set[FragmentDefinitionNode]
+    ) -> VariableUsages:
+        pass
+
+    # TODO
+    def new_scope(  # L1148
         self, parent_type: TParent, enclosing_scope: Optional[GraphQLCompositeType] = None
     ) -> Scope[TParent]:
         pass
