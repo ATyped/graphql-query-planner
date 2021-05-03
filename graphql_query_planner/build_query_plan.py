@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from itertools import chain
-from typing import Literal, Optional, Union, cast
+from typing import Callable, Literal, Optional, Union, cast
 
 from graphql import (
     ArgumentNode,
@@ -10,6 +10,8 @@ from graphql import (
     FragmentDefinitionNode,
     GraphQLCompositeType,
     GraphQLError,
+    GraphQLField,
+    GraphQLObjectType,
     GraphQLSchema,
     ListTypeNode,
     NamedTypeNode,
@@ -27,7 +29,13 @@ from graphql import (
     visit,
 )
 
-from graphql_query_planner.field_set import FieldSet, Scope, TParent, selection_set_from_field_set
+from graphql_query_planner.field_set import (
+    Field,
+    FieldSet,
+    Scope,
+    TParent,
+    selection_set_from_field_set,
+)
 from graphql_query_planner.query_plan import (
     FetchNode,
     FlattenNode,
@@ -253,12 +261,42 @@ def flat_wrap(kind: Literal['Parallel', 'Sequence'], nodes: list[PlanNode]) -> P
     return ParallelNode(nodes=nodes) if kind == 'Parallel' else SequenceNode(nodes=nodes)
 
 
-# TODO
 def split_root_fields(  # L336
     context: 'QueryPlanningContext',
     fields: FieldSet,
 ) -> list['FetchGroup']:
-    pass
+    groups_by_service: dict[ServiceName, FetchGroup] = {}
+
+    def group_for_service(service_name: str) -> FetchGroup:
+        group = groups_by_service.get(service_name)
+
+        if group is None:
+            group = FetchGroup(service_name)
+            groups_by_service[service_name] = group
+
+        return group
+
+    def group_for_field(field: Field[GraphQLObjectType]) -> FetchGroup:
+        scope = field.scope
+        field_node = field.field_node
+        field_def = field.field_def
+        parent_type = scope.parent_type
+
+        owning_service = context.get_owning_service(parent_type, field_def)
+
+        if owning_service is None:
+            raise GraphQLError(
+                "Couldn't find owning service for field "
+                f'{parent_type.name}.'
+                f'{field_def.ast_node.name.value if field_def.ast_node else field_def}',
+                field_node,
+            )
+
+        return group_for_service(owning_service)
+
+    split_fields(context, [], fields, group_for_field)
+
+    return list(groups_by_service.values())
 
 
 # TODO
@@ -278,6 +316,16 @@ def split_root_fields_serially(  # L386
     context: 'QueryPlanningContext',
     fields: FieldSet,
 ) -> list['FetchGroup']:
+    pass
+
+
+# TODO
+def split_fields(
+    context: 'QueryPlanningContext',
+    path: ResponsePath,
+    fields: FieldSet,
+    group_for_field: Callable[[Field[GraphQLObjectType]], 'FetchGroup'],
+):
     pass
 
 
@@ -419,4 +467,10 @@ class QueryPlanningContext:  # L1068
     def new_scope(  # L1148
         self, parent_type: TParent, enclosing_scope: Optional[GraphQLCompositeType] = None
     ) -> Scope[TParent]:
+        pass
+
+    # TODO
+    def get_owning_service(
+        self, parent_type: GraphQLObjectType, field_def: GraphQLField
+    ) -> Optional[str]:  # L1168
         pass
