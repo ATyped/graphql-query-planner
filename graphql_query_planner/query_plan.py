@@ -60,7 +60,7 @@ class QueryPlanFieldNode:
 
 
 @dataclass(frozen=True)
-class QueryPlanInlineFragmentNode:  # L56
+class QueryPlanInlineFragmentNode:
     kind = 'InlineFragment'
     type_condition: Optional[str]
     selections: list[QueryPlanSelectionNode]

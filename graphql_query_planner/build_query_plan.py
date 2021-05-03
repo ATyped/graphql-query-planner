@@ -49,7 +49,7 @@ from graphql_query_planner.query_plan import (
 
 
 @dataclass
-class OperationContext:  # L87
+class OperationContext:
     schema: GraphQLSchema
     operation: OperationDefinitionNode
     fragments: 'FragmentMap'
@@ -66,7 +66,7 @@ class BuildQueryPlanOptions:
 
 
 # TODO: impl debug
-def build_query_plan(  # L99
+def build_query_plan(
     operation_context: OperationContext,
     options: Optional[BuildQueryPlanOptions] = None,
 ) -> QueryPlan:
@@ -113,7 +113,7 @@ def build_query_plan(  # L99
     )
 
 
-def execution_node_for_group(  # L150
+def execution_node_for_group(
     context: 'QueryPlanningContext',
     group: 'FetchGroup',
     parent_type: Optional[GraphQLCompositeType] = None,
@@ -159,7 +159,7 @@ def execution_node_for_group(  # L150
 
 
 VariableName = str
-VariableUsages = dict[VariableName, VariableDefinitionNode]  # L213
+VariableUsages = dict[VariableName, VariableDefinitionNode]
 
 
 def map_fetch_node_to_variable_definitions(
@@ -168,7 +168,7 @@ def map_fetch_node_to_variable_definitions(
     return list(variable_usages.values())
 
 
-def operation_for_root_fetch(  # L223
+def operation_for_root_fetch(
     selection_set: SelectionSetNode,
     variable_usages: VariableUsages,
     internal_fragments: set[FragmentDefinitionNode],
@@ -185,7 +185,7 @@ def operation_for_root_fetch(  # L223
     return DocumentNode(definitions=definitions)
 
 
-def operation_for_entities_fetch(  # L248
+def operation_for_entities_fetch(
     selection_set: SelectionSetNode,
     variable_usages: VariableUsages,
     internal_fragments: set[FragmentDefinitionNode],
@@ -244,7 +244,7 @@ def operation_for_entities_fetch(  # L248
 # in the given list have their sub-nodes flattened into the list: ie,
 # flatWrap('Sequence', [a, flatWrap('Sequence', b, c), d]) returns a SequenceNode
 # with four children.
-def flat_wrap(kind: Literal['Parallel', 'Sequence'], nodes: list[PlanNode]) -> PlanNode:  # L320
+def flat_wrap(kind: Literal['Parallel', 'Sequence'], nodes: list[PlanNode]) -> PlanNode:
     # Notice: the 'Parallel' is the value of ParallelNode.kind
     # and the 'Sequence' is the value of SequenceNode.kind
     if len(nodes) == 0:
@@ -261,7 +261,8 @@ def flat_wrap(kind: Literal['Parallel', 'Sequence'], nodes: list[PlanNode]) -> P
     return ParallelNode(nodes=nodes) if kind == 'Parallel' else SequenceNode(nodes=nodes)
 
 
-def split_root_fields(  # L336
+# noinspection DuplicatedCode
+def split_root_fields(
     context: 'QueryPlanningContext',
     fields: FieldSet,
 ) -> list['FetchGroup']:
@@ -312,7 +313,7 @@ def split_root_fields(  # L336
 #      deleteReview() # reviews service (3)
 #    }
 # noinspection DuplicatedCode
-def split_root_fields_serially(  # L386
+def split_root_fields_serially(
     context: 'QueryPlanningContext',
     fields: FieldSet,
 ) -> list['FetchGroup']:
@@ -357,7 +358,7 @@ def split_root_fields_serially(  # L386
 
 
 # TODO
-def split_fields(
+def split_fields(  # L558
     context: 'QueryPlanningContext',
     path: ResponsePath,
     fields: FieldSet,
@@ -384,7 +385,7 @@ def collect_fields(  # L834
 ServiceName = str
 
 
-class FetchGroup:  # L954
+class FetchGroup:
     service_name: str
     fields: FieldSet
     internal_fragments: set[FragmentDefinitionNode]
@@ -450,7 +451,7 @@ class FetchGroup:  # L954
         return groups
 
 
-def build_query_planning_context(  # L1056
+def build_query_planning_context(
     operation_context: OperationContext,
     options: BuildQueryPlanOptions = BuildQueryPlanOptions(auto_fragmentization=False),
 ) -> 'QueryPlanningContext':
@@ -471,7 +472,7 @@ class QueryPlanningContext:  # L1068
 
     _variable_definitions: dict[VariableName, VariableDefinitionNode]
 
-    def __init__(  # L1084
+    def __init__(
         self,
         schema: GraphQLSchema,
         operation: OperationDefinitionNode,
