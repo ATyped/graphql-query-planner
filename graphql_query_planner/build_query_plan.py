@@ -299,7 +299,6 @@ def split_root_fields(  # L336
     return list(groups_by_service.values())
 
 
-# TODO
 # For mutations, we need to respect the order of the fields, in order to
 # determine which fields can be batched together in the same request. If
 # they're "split" by fields belonging to other services, then we need to manage
@@ -312,11 +311,49 @@ def split_root_fields(  # L336
 #      login() # account service (2)
 #      deleteReview() # reviews service (3)
 #    }
+# noinspection DuplicatedCode
 def split_root_fields_serially(  # L386
     context: 'QueryPlanningContext',
     fields: FieldSet,
 ) -> list['FetchGroup']:
-    pass
+    fetch_groups: list[FetchGroup] = []
+
+    # TODO: raw codes use `groupForField`, which is unreasonable
+    def group_for_service(service_name: str) -> FetchGroup:
+        # If the most recent FetchGroup in the array belongs to the same service,
+        # the field in question can be batched within that group.
+        previous_group = fetch_groups[-1]
+        if previous_group and previous_group.service_name == service_name:
+            return previous_group
+
+        # If there's no previous group, or the previous group is from a different
+        # service, then we need to add a new FetchGroup.
+        group = FetchGroup(service_name)
+        fetch_groups.append(group)
+
+        return group
+
+    def group_for_field(field: Field[GraphQLObjectType]) -> FetchGroup:
+        scope = field.scope
+        field_node = field.field_node
+        field_def = field.field_def
+        parent_type = scope.parent_type
+
+        owning_service = context.get_owning_service(parent_type, field_def)
+
+        if owning_service is None:
+            raise GraphQLError(
+                "Couldn't find owning service for field "
+                f'{parent_type.name}.'
+                f'{field_def.ast_node.name.value if field_def.ast_node else field_def}',
+                field_node,
+            )
+
+        return group_for_service(owning_service)
+
+    split_fields(context, [], fields, group_for_field)
+
+    return fetch_groups
 
 
 # TODO
