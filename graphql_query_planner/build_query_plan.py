@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from itertools import chain
-from typing import Callable, Literal, Optional, Union, cast
+from typing import Callable, Literal, Optional, cast
 
 from graphql import (
     ArgumentNode,
@@ -10,7 +10,6 @@ from graphql import (
     FragmentDefinitionNode,
     GraphQLCompositeType,
     GraphQLError,
-    GraphQLField,
     GraphQLObjectType,
     GraphQLSchema,
     ListTypeNode,
@@ -24,18 +23,23 @@ from graphql import (
     VariableNode,
     Visitor,
     get_operation_root_type,
+    is_object_type,
     print_ast,
     strip_ignored_characters,
     visit,
 )
 
+from graphql_query_planner.composed_schema.metadata import get_federation_metadata_for_field
 from graphql_query_planner.field_set import (
     Field,
     FieldSet,
     Scope,
     TParent,
+    group_by_parent_type,
+    group_by_response_name,
     selection_set_from_field_set,
 )
+from graphql_query_planner.polyfill import flat_map
 from graphql_query_planner.query_plan import (
     FetchNode,
     FlattenNode,
@@ -46,6 +50,10 @@ from graphql_query_planner.query_plan import (
     SequenceNode,
     trim_selection_nodes,
 )
+from graphql_query_planner.shims import GraphQLField
+from graphql_query_planner.utilities.graphql_ import get_field_def
+from graphql_query_planner.utilities.multi_map import MultiMap
+from graphql_query_planner.utilities.predicates import is_not_null_or_undefined
 
 
 @dataclass
@@ -251,14 +259,14 @@ def flat_wrap(kind: Literal['Parallel', 'Sequence'], nodes: list[PlanNode]) -> P
         raise Exception('programming error: should always be called with nodes')
     if len(nodes) == 1:
         return nodes[0]
-    nodes = list(
-        chain.from_iterable(
-            cast(Union[ParallelNode, SequenceNode], n).nodes if n.kind == kind else [n]
-            for n in nodes
-        )
-    )
 
-    return ParallelNode(nodes=nodes) if kind == 'Parallel' else SequenceNode(nodes=nodes)
+    return (
+        ParallelNode(
+            nodes=flat_map(nodes, lambda n: cast(ParallelNode, n).nodes if n.kind == kind else [n])
+        )
+        if kind == 'Parallel'
+        else SequenceNode(nodes=nodes)
+    )
 
 
 # noinspection DuplicatedCode
@@ -357,13 +365,158 @@ def split_root_fields_serially(
     return fetch_groups
 
 
-# TODO
-def split_fields(  # L558
+def split_fields(
     context: 'QueryPlanningContext',
     path: ResponsePath,
     fields: FieldSet,
     group_for_field: Callable[[Field[GraphQLObjectType]], 'FetchGroup'],
 ):
+    for fields_for_response_name in group_by_response_name(fields).values():
+        for parent_type, fields_for_parent_type in group_by_parent_type(
+            fields_for_response_name
+        ).items():
+            # Field nodes that share the same response name and parent type are guaranteed
+            # to have the same field name and arguments. We only need the other nodes when
+            # merging selection sets, to take node-specific subfields and directives
+            # into account.
+
+            # debug.group(() = > debugPrintFields(fieldsForParentType));
+
+            field = fields_for_parent_type[0]
+            scope = field.scope
+            field_def = field.field_def
+
+            # We skip `__typename` for root types.
+            # TODO: graphql-core's GraphQLField doesn't conform to the origin
+            # if (fieldDef.name === TypeNameMetaFieldDef.name) {
+            if field_def.name == '__typename':
+                schema = context.schema
+                roots = [
+                    # the redundant cast makes mypy understand `t is not None`
+                    cast(GraphQLObjectType, t).name
+                    for t in [schema.query_type, schema.mutation_type, schema.subscription_type]
+                    if is_not_null_or_undefined(t)
+                ]
+                try:
+                    roots.index(parent_type.name)
+                    # debug.groupEnd("Skipping __typename for root types");
+                    continue
+                except ValueError:
+                    pass
+
+            # We skip introspection fields like `__schema` and `__type`.
+            if is_object_type(parent_type) and parent_type in scope.possible_types:
+                # If parent type is an object type, we can directly look for the right
+                # group.
+
+                # debug.log(() => `${parentType} = object and ${parentType}`
+                #   ` ∈ [${scope.possibleTypes}]`);
+                group = group_for_field(field)
+                # debug.log(() => `Initial fetch group for fields: ${debugPrintGroup(group)}`);
+                group.fields.append(
+                    complete_field(context, scope, group, path, fields_for_parent_type)
+                )
+                # debug.groupEnd(() => `Updated fetch group: ${debugPrintGroup(group)}`);
+            else:
+                # debug.log(() => `${parentType} ≠ object or ${parentType}`
+                #   ` ∉ [${scope.possibleTypes}]`);
+
+                # For interfaces however, we need to look at all possible runtime types.
+
+                # The following is an optimization to prevent an explosion of type
+                # conditions to services when it isn't needed. If all possible runtime
+                # types can be fulfilled by only one service then we don't need to
+                # expand the fields into unique type conditions.
+
+                # Collect all of the field defs on the possible runtime types
+                possible_field_defs = [
+                    context.get_field_def(runtime_type, field.field_node)
+                    for runtime_type in scope.possible_types
+                ]
+
+                # If none of the field defs have a federation property, this interface's
+                # implementors can all be resolved within the same service.
+                has_no_extending_field_defs = not any(
+                    get_federation_metadata_for_field(field) for field in possible_field_defs
+                )
+
+                # With no extending field definitions, we can engage the optimization
+                if has_no_extending_field_defs:
+                    # debug.group(() => `No field of ${scope.possibleTypes} have federation`
+                    #   ` directives, avoid type explosion.`);
+                    group = group_for_field(field)
+                    # debug.groupEnd(() => `Initial fetch group for fields: `
+                    #   `${debugPrintGroup(group)}`);
+                    group.fields.append(
+                        complete_field(context, scope, group, path, fields_for_parent_type)
+                    )
+                    # debug.groupEnd(() => `Updated fetch group: ${debugPrintGroup(group)}`);
+                    continue
+
+                # We keep track of which possible runtime parent types can be fetched
+                # from which group,
+                groups_by_runtime_parent_types = MultiMap[FetchGroup, GraphQLObjectType]()
+
+                # debug.group('Computing fetch groups by runtime parent types');
+                for runtime_parent_type in scope.possible_types:
+                    field_def = context.get_field_def(runtime_parent_type, field.field_node)
+                    groups_by_runtime_parent_types.add(
+                        group_for_field(
+                            Field(
+                                scope=context.new_scope(runtime_parent_type, scope),
+                                field_node=field.field_node,
+                                field_def=field_def,
+                            )
+                        ),
+                        runtime_parent_type,
+                    )
+
+                # debug.groupEnd(`Fetch groups to resolvable runtime types:`);
+                # debug.groupedEntries(groupsByRuntimeParentTypes, debugPrintGroup, `
+                #   `(v) => v.toString());
+
+                # debug.group('Iterating on fetch groups');
+
+                # We add the field separately for each runtime parent type.
+                for group, runtime_parent_types in groups_by_runtime_parent_types.items():
+                    # debug.group(() => `For initial fetch group ${debugPrintGroup(group)}:`);
+                    for runtime_parent_type in runtime_parent_types:
+                        # We need to adjust the fields to contain the right fieldDef for
+                        # their runtime parent type.
+
+                        # debug.group(`For runtime parent type ${runtimeParentType}:`);
+
+                        field_def = context.get_field_def(runtime_parent_type, field.field_node)
+
+                        fields_with_runtime_parent_type = [
+                            Field(scope=x.scope, field_node=x.field_node, field_def=field_def)
+                            for x in fields_for_parent_type
+                        ]
+
+                        group.fields.append(
+                            complete_field(
+                                context,
+                                context.new_scope(runtime_parent_type, scope),
+                                group,
+                                path,
+                                fields_with_runtime_parent_type,
+                            ),
+                        )
+                        # debug.groupEnd(() => `Updated fetch group: ${debugPrintGroup(group)}`);
+                    # debug.groupEnd();
+                # debug.groupEnd();  # Group started before the immediate for loop
+
+                # debug.groupEnd();  # Group started at the beginning of this 'top-level' iteration.
+
+
+# TODO
+def complete_field(
+    context: 'QueryPlanningContext',
+    scope: Scope[GraphQLCompositeType],
+    parent_group: 'FetchGroup',
+    path: ResponsePath,
+    fields: FieldSet,
+) -> Field:
     pass
 
 
@@ -495,6 +648,20 @@ class QueryPlanningContext:  # L1068
 
         visit(operation, VariableDefinitionVisitor())
 
+    def get_field_def(
+        self, parent_type: GraphQLCompositeType, field_node: FieldNode
+    ) -> GraphQLField:
+        field_name = field_node.name.value
+
+        field_def = get_field_def(self.schema, parent_type, field_name)
+
+        if field_def is None:
+            raise GraphQLError(
+                f'Cannot query field {field_node.name.value}' ' on type ${parent_type}', field_node
+            )
+
+        return field_def
+
     # TODO
     def get_variable_usages(  # L1121
         self, selection_set: SelectionSetNode, fragments: set[FragmentDefinitionNode]
@@ -503,7 +670,7 @@ class QueryPlanningContext:  # L1068
 
     # TODO
     def new_scope(  # L1148
-        self, parent_type: TParent, enclosing_scope: Optional[GraphQLCompositeType] = None
+        self, parent_type: TParent, enclosing_scope: Optional[Scope[GraphQLCompositeType]] = None
     ) -> Scope[TParent]:
         pass
 
