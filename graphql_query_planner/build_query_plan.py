@@ -38,7 +38,10 @@ from graphql import (
     visit,
 )
 
-from graphql_query_planner.composed_schema.metadata import get_federation_metadata_for_field
+from graphql_query_planner.composed_schema.metadata import (
+    get_federation_metadata_for_field,
+    get_federation_metadata_for_type,
+)
 from graphql_query_planner.field_set import (
     Field,
     FieldSet,
@@ -46,6 +49,7 @@ from graphql_query_planner.field_set import (
     TParent,
     group_by_parent_type,
     group_by_response_name,
+    matches_field,
     selection_set_from_field_set,
 )
 from graphql_query_planner.polyfill import flat_map
@@ -382,7 +386,98 @@ def split_subfields(
     fields: FieldSet,
     parent_group: 'FetchGroup',
 ) -> None:
-    pass
+    def group_for_field(field: Field[GraphQLObjectType]) -> FetchGroup:
+        scope = field.scope
+        field_node = field.field_node
+        field_def = field.field_def
+        parent_type = scope.parent_type
+
+        # Committed by @trevor-scheer but authored by @martijnwalraven
+        # Treat abstract types as value types to replicate type explosion fix
+        # XXX: this replicates the behavior of the Rust query planner implementation,
+        # in order to get the tests passing before making further changes. But the
+        # type explosion fix this depends on is fundamentally flawed and needs to
+        # be replaced.
+        parent_is_value_type = (
+            not is_object_type(parent_type) or federation_metadata.is_value_type
+            if (federation_metadata := get_federation_metadata_for_type(parent_type))
+            else None
+        )
+
+        if parent_is_value_type:
+            base_service: Optional[str] = parent_group.service_name
+            owning_service: Optional[str] = parent_group.service_name
+        else:
+            base_service = context.get_base_service(parent_type)
+            owning_service = context.get_owning_service(parent_type, field_def)
+
+        if not base_service:
+            raise GraphQLError(
+                f"Couldn't find base service for type {parent_type.name}", field_node
+            )
+
+        if not owning_service:
+            raise GraphQLError(
+                f"Couldn't find owning service for field {parent_type.name}.{field_def.name}",
+                field_node,
+            )
+
+        # Is the field defined on the base service?
+        if owning_service == base_service:
+            # Can we fetch the field from the parent group?
+
+            if owning_service == parent_group.service_name or any(
+                matches_field(field)(f) for f in parent_group.provided_fields
+            ):
+                return parent_group
+            else:
+                # We need to fetch the key fields from the parent group first, and then
+                # use a dependent fetch from the owning service.
+                key_fields = context.get_key_fields(parent_type, parent_group.service_name)
+                if len(key_fields) == 0 or (
+                    len(key_fields) == 1 and key_fields[0].field_def.name == '__typename'
+                ):
+                    # Only __typename key found.
+                    # In some cases, the parent group does not have any @key directives.
+                    # Fall back to owning group's keys
+                    key_fields = context.get_key_fields(parent_type, owning_service)
+                return parent_group.dependent_group_for_service(owning_service, key_fields)
+        else:
+            # It's an extension field, so we need to fetch the required fields first.
+            required_fields = context.get_required_fields(parent_type, field_def, owning_service)
+
+            # Can we fetch the required fields from the parent group?
+            if all(
+                any(
+                    matches_field(required_field)(provided_field)
+                    for provided_field in parent_group.provided_fields
+                )
+                for required_field in required_fields
+            ):
+                if owning_service == parent_group.service_name:
+                    return parent_group
+                else:
+                    return parent_group.dependent_group_for_service(owning_service, required_fields)
+            else:
+                # We need to go through the base group first.
+
+                key_fields = context.get_key_fields(parent_type, parent_group.service_name)
+
+                if not key_fields:
+                    raise GraphQLError(
+                        f"Couldn't find keys for type \"{parent_type.name}\" "
+                        f'in service "{base_service}"',
+                        field_node,
+                    )
+
+                if base_service == parent_group.service_name:
+                    return parent_group.dependent_group_for_service(owning_service, required_fields)
+
+                base_group = parent_group.dependent_group_for_service(base_service, key_fields)
+
+                return base_group.dependent_group_for_service(owning_service, required_fields)
+
+    split_fields(context, path, fields, group_for_field)
 
 
 def split_fields(
@@ -620,6 +715,7 @@ def collect_fields(  # L834
     return []
 
 
+# TODO
 # Collecting subfields collapses parent types, because it merges
 # selection sets without taking the runtime parent type of the field
 # into account. If we want to keep track of multiple levels of possible
@@ -784,9 +880,25 @@ class QueryPlanningContext:  # L1068
         pass
 
     # TODO
+    def get_base_service(self, parent_type: GraphQLObjectType) -> Optional[str]:
+        pass
+
+    # TODO
     def get_owning_service(
         self, parent_type: GraphQLObjectType, field_def: GraphQLField
     ) -> Optional[str]:  # L1168
+        pass
+
+    # TODO
+    def get_key_fields(
+        self, parent_type: GraphQLCompositeType, service_name: str, fetch_all: Optional[bool] = None
+    ) -> FieldSet:
+        pass
+
+    # TODO
+    def get_required_fields(
+        self, parent_type: GraphQLCompositeType, field_def: GraphQLField, service_name: str
+    ) -> FieldSet:
         pass
 
     # TODO

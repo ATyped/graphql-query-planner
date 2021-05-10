@@ -36,6 +36,14 @@ class Scope(Generic[TParent]):
 FieldSet = list[Field]
 
 
+def matches_field(field: Field) -> Callable[[Field], bool]:
+    # TODO: Compare parent type and arguments
+    def matcher(other_field: Field) -> bool:
+        return field.field_def.name == other_field.field_def.name
+
+    return matcher
+
+
 group_by_response_name = cast(
     Callable[[list[Field]], dict[str, list[Field]]],
     group_by(lambda field: get_response_name(field.field_node)),
