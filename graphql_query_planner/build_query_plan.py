@@ -1,3 +1,4 @@
+from copy import copy
 from dataclasses import dataclass
 from itertools import chain
 from typing import Callable, Literal, Optional, cast
@@ -12,6 +13,8 @@ from graphql import (
     GraphQLError,
     GraphQLObjectType,
     GraphQLSchema,
+    GraphQLType,
+    GraphQLWrappingType,
     ListTypeNode,
     NamedTypeNode,
     NameNode,
@@ -19,10 +22,16 @@ from graphql import (
     OperationDefinitionNode,
     OperationType,
     SelectionSetNode,
+    TypeNameMetaFieldDef,
     VariableDefinitionNode,
     VariableNode,
     Visitor,
+    get_named_type,
     get_operation_root_type,
+    is_abstract_type,
+    is_composite_type,
+    is_list_type,
+    is_named_type,
     is_object_type,
     print_ast,
     strip_ignored_characters,
@@ -51,9 +60,11 @@ from graphql_query_planner.query_plan import (
     trim_selection_nodes,
 )
 from graphql_query_planner.shims import GraphQLField
-from graphql_query_planner.utilities.graphql_ import get_field_def
+from graphql_query_planner.utilities.graphql_ import get_field_def, get_response_name
 from graphql_query_planner.utilities.multi_map import MultiMap
 from graphql_query_planner.utilities.predicates import is_not_null_or_undefined
+
+typename_field = FieldNode(name=NameNode(value='__typename'))
 
 
 @dataclass
@@ -365,6 +376,15 @@ def split_root_fields_serially(
     return fetch_groups
 
 
+def split_subfields(
+    context: 'QueryPlanningContext',
+    path: ResponsePath,
+    fields: FieldSet,
+    parent_group: 'FetchGroup',
+) -> None:
+    pass
+
+
 def split_fields(
     context: 'QueryPlanningContext',
     path: ResponsePath,
@@ -488,10 +508,11 @@ def split_fields(
 
                         field_def = context.get_field_def(runtime_parent_type, field.field_node)
 
-                        fields_with_runtime_parent_type = [
-                            Field(scope=x.scope, field_node=x.field_node, field_def=field_def)
-                            for x in fields_for_parent_type
-                        ]
+                        fields_with_runtime_parent_type = []
+                        for x in fields_for_parent_type:
+                            x = copy(x)
+                            x.field_def = field_def
+                            fields_with_runtime_parent_type.append(x)
 
                         group.fields.append(
                             complete_field(
@@ -509,7 +530,6 @@ def split_fields(
                 # debug.groupEnd();  # Group started at the beginning of this 'top-level' iteration.
 
 
-# TODO
 def complete_field(
     context: 'QueryPlanningContext',
     scope: Scope[GraphQLCompositeType],
@@ -517,6 +537,71 @@ def complete_field(
     path: ResponsePath,
     fields: FieldSet,
 ) -> Field:
+    field_node = fields[0].field_node
+    field_def = fields[0].field_def
+    return_type = get_named_type(field_def.type)
+
+    if not is_composite_type(return_type):
+        # FIXME: We should look at all field nodes to make sure we take directives
+        # into account (or remove directives for the time being).
+        return Field(scope=scope, field_node=field_node, field_def=field_def)
+    else:
+        # For composite types, we need to recurse.
+
+        field_path = add_path(path, get_response_name(field_node), field_def.type)
+
+        sub_group = FetchGroup(parent_group.service_name)
+        sub_group.merge_at = field_path
+
+        sub_group.provided_fields = context.get_provided_fields(
+            field_def, parent_group.service_name
+        )
+
+        # For abstract types, we always need to request `__typename`
+        if is_abstract_type(return_type):
+
+            sub_group.fields.append(
+                Field(
+                    scope=context.new_scope(return_type, scope),
+                    field_node=typename_field,
+                    field_def=GraphQLField(TypeNameMetaFieldDef, name='__typename'),
+                )
+            )
+
+        sub_fields = collect_subfields(context, cast(GraphQLCompositeType, return_type), fields)
+        # debug.group(() => `Splitting collected sub-fields (${debugPrintFields(subfields)})`);
+        split_subfields(context, field_path, sub_fields, sub_group)
+        # debug.groupEnd();
+
+        parent_group.other_dependent_groups.extend(sub_group.dependent_groups)
+
+        selection_set = selection_set_from_field_set(
+            sub_group.fields, cast(GraphQLCompositeType, return_type)
+        )
+
+        if context.auto_fragmentization and len(sub_group.fields) > 2:
+            internal_fragment = get_internal_fragment(
+                selection_set, cast(GraphQLCompositeType, return_type), context
+            )
+            definition = internal_fragment.definition
+            selection_set = internal_fragment.selection_set
+            parent_group.internal_fragments.add(definition)
+
+        # "Hoist" internalFragments of the subGroup into the parentGroup so all
+        # fragments can be included in the final request for the root FetchGroup
+        parent_group.internal_fragments.update(sub_group.internal_fragments)
+
+        new_field_node = copy(field_node)
+        new_field_node.selection_set = selection_set
+        return Field(scope=scope, field_node=new_field_node, field_def=field_def)
+
+
+# TODO
+def get_internal_fragment(
+    selection_set: SelectionSetNode,
+    return_type: GraphQLCompositeType,
+    context: 'QueryPlanningContext',
+) -> 'InternalFragment':
     pass
 
 
@@ -533,6 +618,16 @@ def collect_fields(  # L834
     if visited_fragment_names is None:
         visited_fragment_names = {}
     return []
+
+
+# Collecting subfields collapses parent types, because it merges
+# selection sets without taking the runtime parent type of the field
+# into account. If we want to keep track of multiple levels of possible
+# types, this is where that would need to happen.
+def collect_subfields(
+    context: 'QueryPlanningContext', return_type: GraphQLCompositeType, fields: FieldSet
+) -> FieldSet:
+    pass
 
 
 ServiceName = str
@@ -616,8 +711,19 @@ def build_query_planning_context(
     )
 
 
+@dataclass
+class InternalFragment:
+    name: str
+    definition: FragmentDefinitionNode
+    selection_set: SelectionSetNode
+
+
 # TODO
 class QueryPlanningContext:  # L1068
+    internal_fragments: dict[str, InternalFragment]
+
+    internal_fragment_count: int
+
     schema: GraphQLSchema
     operation: OperationDefinitionNode
     fragments: FragmentMap
@@ -632,6 +738,9 @@ class QueryPlanningContext:  # L1068
         fragments: FragmentMap,
         auto_fragmentization: bool,
     ):
+        self.internal_fragments = {}
+        self.internal_fragment_count = 0
+
         self.schema = schema
         self.operation = operation
         self.fragments = fragments
@@ -679,3 +788,22 @@ class QueryPlanningContext:  # L1068
         self, parent_type: GraphQLObjectType, field_def: GraphQLField
     ) -> Optional[str]:  # L1168
         pass
+
+    # TODO
+    def get_provided_fields(self, field_def: GraphQLField, service_name: str) -> FieldSet:
+        pass
+
+
+def add_path(path: ResponsePath, response_name: str, type_: GraphQLType):
+    path = path[:]
+    path.append(response_name)
+
+    while not is_named_type(type_):
+        if is_list_type(type_):
+            path.append('@')
+
+        # GraphQLType have two direct subtypes: GraphQLNamedType and GraphQLWrappingType
+        # if type_ is not a GraphQLNamedType, then it must be a GraphQLWrappingType
+        type_ = cast(GraphQLWrappingType, type_).of_type
+
+    return path
