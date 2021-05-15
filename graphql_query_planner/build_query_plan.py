@@ -9,6 +9,7 @@ from graphql import (
     DocumentNode,
     FieldNode,
     FragmentDefinitionNode,
+    FragmentSpreadNode,
     GraphQLCompositeType,
     GraphQLError,
     GraphQLObjectType,
@@ -657,7 +658,7 @@ def complete_field(
 
             sub_group.fields.append(
                 Field(
-                    scope=context.new_scope(return_type, scope),
+                    scope=context.new_scope(cast(GraphQLCompositeType, return_type), scope),
                     field_node=typename_field,
                     field_def=GraphQLField(TypeNameMetaFieldDef, name='__typename'),
                 )
@@ -691,13 +692,32 @@ def complete_field(
         return Field(scope=scope, field_node=new_field_node, field_def=field_def)
 
 
-# TODO
 def get_internal_fragment(
     selection_set: SelectionSetNode,
     return_type: GraphQLCompositeType,
     context: 'QueryPlanningContext',
 ) -> 'InternalFragment':
-    pass
+    # TODO: is key correct ?
+    key = str(hash(selection_set))  # const key = JSON.stringify(selectionSet);
+    if key not in context.internal_fragments:
+        name = f'__QueryPlanFragment_{context.internal_fragment_count}'
+        context.internal_fragment_count += 1
+
+        definition = FragmentDefinitionNode(
+            name=NameNode(value=name),
+            type_condition=NamedTypeNode(name=NameNode(value=return_type.name)),
+            selection_set=selection_set,
+        )
+
+        fragment_selection = SelectionSetNode(
+            selections=[FragmentSpreadNode(name=NameNode(value=name))]
+        )
+
+        context.internal_fragments[key] = InternalFragment(
+            name=name, definition=definition, selection_set=fragment_selection
+        )
+
+    return context.internal_fragments[key]
 
 
 # TODO
