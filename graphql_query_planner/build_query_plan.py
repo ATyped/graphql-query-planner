@@ -10,6 +10,7 @@ from graphql import (
     FieldNode,
     FragmentDefinitionNode,
     FragmentSpreadNode,
+    GraphQLAbstractType,
     GraphQLCompositeType,
     GraphQLError,
     GraphQLObjectType,
@@ -657,7 +658,6 @@ def complete_field(
 
         # For abstract types, we always need to request `__typename`
         if is_abstract_type(return_type):
-
             sub_group.fields.append(
                 Field(
                     scope=context.new_scope(cast(GraphQLCompositeType, return_type), scope),
@@ -864,7 +864,6 @@ class FetchGroup:
 
         self.other_dependent_groups = []
 
-    # pylint: disable=protected-access
     def dependent_group_for_service(
         self, service_name: str, required_fields: FieldSet
     ) -> 'FetchGroup':
@@ -922,7 +921,7 @@ class QueryPlanningContext:  # L1068
     fragments: FragmentMap
     auto_fragmentization: bool
 
-    _variable_definitions: dict[VariableName, VariableDefinitionNode]
+    variable_definitions: dict[VariableName, VariableDefinitionNode]
 
     def __init__(
         self,
@@ -941,12 +940,12 @@ class QueryPlanningContext:  # L1068
 
         variable_definitions = {}
 
-        # noinspection PyMethodMayBeStatic
         class VariableDefinitionVisitor(Visitor):
+            # noinspection PyMethodMayBeStatic
             def enter_variable_definition(self, definition: VariableDefinitionNode, *_) -> None:
                 variable_definitions[definition.variable.name.value] = definition
 
-        self._variable_definitions = variable_definitions
+        self.variable_definitions = variable_definitions
 
         visit(operation, VariableDefinitionVisitor())
 
@@ -964,17 +963,53 @@ class QueryPlanningContext:  # L1068
 
         return field_def
 
-    # TODO
-    def get_variable_usages(  # L1121
+    def get_possible_types(
+        self, type_: Union[GraphQLAbstractType, GraphQLObjectType]
+    ) -> list[GraphQLObjectType]:
+        return (
+            self.schema.get_possible_types(cast(GraphQLAbstractType, type_))
+            if is_abstract_type(type_)
+            else [cast(GraphQLObjectType, type_)]
+        )
+
+    def get_variable_usages(
         self, selection_set: SelectionSetNode, fragments: set[FragmentDefinitionNode]
     ) -> VariableUsages:
-        pass
+        usages: dict[str, VariableDefinitionNode] = {}
 
-    # TODO
-    def new_scope(  # L1148
+        # Construct a document of the selection set and fragment definitions so we
+        # can visit them, adding all variable usages to the `usages` object.
+        definitions: list[DefinitionNode] = [
+            OperationDefinitionNode(selection_set=selection_set, operation=OperationType.QUERY)
+        ]
+        definitions.extend(fragments)
+        document = DocumentNode(definitions=definitions)
+
+        this = self
+
+        class VariableVisitor(Visitor):
+            # noinspection PyMethodMayBeStatic
+            def enter_variable(self, node: VariableNode):
+                usages[node.name.value] = this.variable_definitions[node.name.value]
+
+        visit(document, VariableVisitor())
+
+        return usages
+
+    def new_scope(
         self, parent_type: TParent, enclosing_scope: Optional[Scope[GraphQLCompositeType]] = None
     ) -> Scope[TParent]:
-        pass
+        return Scope(
+            parent_type=parent_type,
+            possible_types=[
+                type_
+                for type_ in self.get_possible_types(parent_type)
+                if type_ in enclosing_scope.possible_types
+            ]
+            if enclosing_scope is not None
+            else self.get_possible_types(parent_type),
+            enclosing_scope=enclosing_scope,
+        )
 
     # TODO
     def get_base_service(self, parent_type: GraphQLObjectType) -> Optional[str]:
