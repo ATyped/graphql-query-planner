@@ -13,6 +13,7 @@ behave = "^1.2.6"
 pre-commit = "^2.12.1"
 pylint = "^2.7.4"
 mypy = "^0.812"
+commitizen = "^2.17.6"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
@@ -40,7 +41,6 @@ force_grid_wrap = 0
 use_parentheses = true
 ensure_newline_before_comments = true
 line_length = 100
-
 indent = '    '
 no_lines_before = 'LOCALFOLDER'
 combine_as_imports = true

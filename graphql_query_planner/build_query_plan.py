@@ -1,7 +1,7 @@
 from copy import copy
 from dataclasses import dataclass
 from itertools import chain
-from typing import Callable, Literal, Optional, cast
+from typing import Callable, Literal, Optional, Union, cast
 
 from graphql import (
     ArgumentNode,
@@ -16,6 +16,7 @@ from graphql import (
     GraphQLSchema,
     GraphQLType,
     GraphQLWrappingType,
+    InlineFragmentNode,
     ListTypeNode,
     NamedTypeNode,
     NameNode,
@@ -36,6 +37,7 @@ from graphql import (
     is_object_type,
     print_ast,
     strip_ignored_characters,
+    type_from_ast,
     visit,
 )
 
@@ -720,8 +722,7 @@ def get_internal_fragment(
     return context.internal_fragments[key]
 
 
-# TODO
-def collect_fields(  # L834
+def collect_fields(
     context: 'QueryPlanningContext',
     scope: Scope[GraphQLCompositeType],
     selection_set: SelectionSetNode,
@@ -732,7 +733,69 @@ def collect_fields(  # L834
         fields = []
     if visited_fragment_names is None:
         visited_fragment_names = {}
-    return []
+
+    def get_fragment_condition(
+        fragment_: Union[FragmentDefinitionNode, InlineFragmentNode]
+    ) -> GraphQLCompositeType:
+        type_condition_node = fragment_.type_condition
+        # FIXME: unreachable
+        # if type_condition_node is None:
+        #     return scope.parent_type
+
+        return cast(GraphQLCompositeType, type_from_ast(context.schema, type_condition_node))
+
+    for selection in selection_set.selections:
+        if selection.kind == FieldNode.kind:
+            selection = cast(FieldNode, selection)
+            field_def = context.get_field_def(scope.parent_type, selection)
+            fields.append(Field(scope=scope, field_node=selection, field_def=field_def))
+        elif selection.kind == InlineFragmentNode.kind:
+            selection = cast(InlineFragmentNode, selection)
+            new_scope = context.new_scope(get_fragment_condition(selection), scope)
+            if len(new_scope.possible_types) == 0:
+                pass
+            else:
+                # Committed by @trevor-scheer but authored by @martijnwalraven
+                # This replicates the behavior added to the Rust query planner in #178.
+                # Unfortunately, the logic in there is seriously flawed, and may lead to
+                # unexpected results. The assumption seems to be that fields with the
+                # same parent type are always nested in the same inline fragment. That
+                # is not necessarily true however, and because we take the directives
+                # from the scope of the first field with a particular parent type,
+                # those directives will be applied to all other fields that have the
+                # same parent type even if the directives aren't meant to apply to them
+                # because they were nested in a different inline fragment. (That also
+                # means that if the scope of the first field doesn't have directives,
+                # directives that would have applied to other fields will be lost.)
+                # Note that this also applies to `@skip` and `@include`, which could
+                # lead to invalid query plans that fail at runtime because expected
+                # fields are missing from a subgraph response.
+                new_scope.directives = selection.directives
+
+                collect_fields(
+                    context, new_scope, selection.selection_set, fields, visited_fragment_names
+                )
+        elif selection.kind == FragmentSpreadNode.kind:
+            fragment_name = cast(FragmentSpreadNode, selection).name.value
+
+            fragment = context.fragments[fragment_name]
+            # FIXME: unreachable
+            # if fragment is None:
+            #     continue
+
+            new_scope = context.new_scope(get_fragment_condition(fragment), scope)
+            if len(new_scope.possible_types) == 0:
+                continue
+
+            if visited_fragment_names[fragment_name]:
+                continue
+            visited_fragment_names[fragment_name] = True
+
+            collect_fields(
+                context, new_scope, fragment.selection_set, fields, visited_fragment_names
+            )
+
+    return fields
 
 
 # TODO
