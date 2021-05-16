@@ -43,8 +43,10 @@ from graphql import (
 )
 
 from graphql_query_planner.composed_schema.metadata import (
+    FederationEntityTypeMetadata,
     get_federation_metadata_for_field,
     get_federation_metadata_for_type,
+    is_entity_type_metadata,
 )
 from graphql_query_planner.field_set import (
     Field,
@@ -910,8 +912,7 @@ class InternalFragment:
     selection_set: SelectionSetNode
 
 
-# TODO
-class QueryPlanningContext:  # L1068
+class QueryPlanningContext:
     internal_fragments: dict[str, InternalFragment]
 
     internal_fragment_count: int
@@ -1011,27 +1012,82 @@ class QueryPlanningContext:  # L1068
             enclosing_scope=enclosing_scope,
         )
 
-    # TODO
+    # noinspection PyMethodMayBeStatic
     def get_base_service(self, parent_type: GraphQLObjectType) -> Optional[str]:
-        pass
+        type_ = get_federation_metadata_for_type(parent_type)
+        return (
+            cast(FederationEntityTypeMetadata, type_).graph_name
+            if type_ is not None and is_entity_type_metadata(type_)
+            else None
+        )
 
-    # TODO
     def get_owning_service(
         self, parent_type: GraphQLObjectType, field_def: GraphQLField
-    ) -> Optional[str]:  # L1168
-        pass
+    ) -> Optional[str]:
+        field = get_federation_metadata_for_field(field_def)
+        if field is not None and field.graph_name:
+            return field.graph_name
+        else:
+            return self.get_base_service(parent_type)
 
-    # TODO
     def get_key_fields(
         self, parent_type: GraphQLCompositeType, service_name: str, fetch_all: Optional[bool] = None
     ) -> FieldSet:
-        pass
+        key_fields: FieldSet = [
+            Field(
+                scope=Scope(
+                    parent_type=parent_type, possible_types=self.get_possible_types(parent_type)
+                ),
+                field_node=typename_field,
+                field_def=GraphQLField(TypeNameMetaFieldDef, '__typename'),
+            )
+        ]
 
-    # TODO
+        for possible_type in self.get_possible_types(parent_type):
+            type_ = get_federation_metadata_for_type(possible_type)
+            keys = (
+                cast(FederationEntityTypeMetadata, type_).keys.get(service_name)
+                if type_ is not None and is_entity_type_metadata(type_)
+                else None
+            )
+
+            if not keys:
+                continue
+
+            if fetch_all:
+                key_fields.extend(
+                    chain.from_iterable(
+                        collect_fields(
+                            self, self.new_scope(possible_type), SelectionSetNode(selections=key)
+                        )
+                        for key in keys
+                    )
+                )
+            else:
+                key_fields.extend(
+                    collect_fields(
+                        self, self.new_scope(possible_type), SelectionSetNode(selections=keys[0])
+                    )
+                )
+
+        return key_fields
+
     def get_required_fields(
         self, parent_type: GraphQLCompositeType, field_def: GraphQLField, service_name: str
     ) -> FieldSet:
-        pass
+        required_fields = self.get_key_fields(parent_type, service_name)
+
+        field_federation_metadata = get_federation_metadata_for_field(field_def)
+        if field_federation_metadata is not None and field_federation_metadata.requires:
+            required_fields.extend(
+                collect_fields(
+                    self,
+                    self.new_scope(parent_type),
+                    SelectionSetNode(selections=field_federation_metadata.requires),
+                )
+            )
+
+        return required_fields
 
     # TODO
     def get_provided_fields(self, field_def: GraphQLField, service_name: str) -> FieldSet:

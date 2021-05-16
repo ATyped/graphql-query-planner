@@ -17,9 +17,9 @@ def get_federation_metadata_for_type(
 
 def get_federation_metadata_for_field(
     field: GraphQLField,
-) -> Optional['FederationTypeMetadata']:
+) -> Optional['FederationFieldMetadata']:
     if field.extensions is not None:
-        return cast(Optional[FederationTypeMetadata], field.extensions.get('federation'))
+        return field.extensions.get('federation')
     else:
         return None
 
@@ -46,7 +46,7 @@ FederationTypeMetadata = Union['FederationEntityTypeMetadata', 'FederationValueT
 
 class FederationEntityTypeMetadata:
     graph_name: GraphName
-    keys: MultiMap
+    keys: MultiMap[GraphName, FieldSet]
     is_value_type = False
 
 
