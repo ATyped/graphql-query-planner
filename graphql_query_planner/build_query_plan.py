@@ -798,7 +798,6 @@ def collect_fields(
     return fields
 
 
-# TODO
 # Collecting subfields collapses parent types, because it merges
 # selection sets without taking the runtime parent type of the field
 # into account. If we want to keep track of multiple levels of possible
@@ -806,7 +805,22 @@ def collect_fields(
 def collect_subfields(
     context: 'QueryPlanningContext', return_type: GraphQLCompositeType, fields: FieldSet
 ) -> FieldSet:
-    pass
+    subfields: FieldSet = []
+    visited_fragment_names: dict[FragmentName, bool] = {}
+
+    for field in fields:
+        selection_set = field.field_node.selection_set
+
+        if selection_set is not None:
+            subfields = collect_fields(
+                context,
+                context.new_scope(return_type),
+                selection_set,
+                subfields,
+                visited_fragment_names,
+            )
+
+    return subfields
 
 
 ServiceName = str
